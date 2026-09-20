@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use image::RgbImage;
-use oar_ocr::core::config::onnx::OrtSessionConfig;
+use oar_ocr::core::config::onnx::{OrtExecutionProvider, OrtSessionConfig};
 use oar_ocr::domain::tasks::TextDetectionConfig;
 use oar_ocr::oarocr::{EdgeProcessor, TextCroppingProcessor};
 use oar_ocr::predictors::{TextDetectionPredictor, TextRecognitionPredictor};
@@ -501,11 +501,52 @@ fn polygon_height(polygon: &BoundingBox) -> f32 {
     }
 }
 
+/// LOCAL FORK: chooses the ONNX Runtime execution provider for OCR sessions.
+///
+/// Upstream builds oar-ocr with `["simd"]` only and never calls
+/// `with_execution_providers`, so every session lands on the CPU provider.
+/// This fork enables oar-ocr's `directml` feature and lets the provider be
+/// selected at runtime. CPU stays the default, so a build or a machine without
+/// the DirectML DLLs behaves exactly like upstream.
+///
+/// `PDF_INSPECTOR_OCR_EP=directml[:N]` -> DirectML on adapter N, CPU as fallback.
+/// unset or any other value                -> CPU only (upstream behaviour).
+///
+/// The adapter index is the DirectML/DXGI enumeration order, which need not
+/// match `nvidia-smi` or Task Manager ordering — on a hybrid laptop the
+/// integrated GPU often comes first. Set N explicitly rather than assuming.
+///
+/// DirectML requires a DirectML-enabled onnxruntime.dll plus DirectML.dll
+/// (shipped by Windows in System32) on the search path.
+const OCR_EP_ENV: &str = "PDF_INSPECTOR_OCR_EP";
+
 fn ocr_session_config(intra_threads: usize) -> OrtSessionConfig {
-    OrtSessionConfig::new()
+    let config = OrtSessionConfig::new()
         .with_intra_threads(intra_threads.max(1))
         .with_inter_threads(1)
-        .with_parallel_execution(false)
+        .with_parallel_execution(false);
+
+    let selected = std::env::var(OCR_EP_ENV).unwrap_or_default();
+    let (name, arg) = match selected.split_once(':') {
+        Some((name, arg)) => (name, Some(arg)),
+        None => (selected.as_str(), None),
+    };
+
+    match name.trim().to_ascii_lowercase().as_str() {
+        "directml" | "dml" => {
+            let device_id: i32 = arg.and_then(|a| a.trim().parse().ok()).unwrap_or(0);
+            config.with_execution_providers(vec![
+                // Order is load-bearing: `has_accelerator_provider()` inspects
+                // only the first entry, and a CPU provider listed first claims
+                // nearly every node before the accelerator gets a chance.
+                OrtExecutionProvider::DirectML {
+                    device_id: Some(device_id),
+                },
+                OrtExecutionProvider::CPU,
+            ])
+        }
+        _ => config,
+    }
 }
 
 fn load_onnx_runtime() -> Result<(), OarOcrError> {
