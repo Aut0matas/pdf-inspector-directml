@@ -62,14 +62,8 @@ fs2 = { version = "0.4", optional = true }
 sha2 = { version = "0.11", optional = true }
 # OCR backend. Models and ONNX Runtime stay external: the latter is loaded
 # dynamically from ORT_DYLIB_PATH or the platform library search path.
-#
-# LOCAL FORK: added "directml" so the ONNX Runtime DirectML execution provider
-# is available for selection. Upstream ships ["simd"] only, which leaves
-# oar-ocr on the CPU provider. See src/vision/oar.rs::ocr_session_config --
-# enabling the feature alone does NOT select the provider; the session config
-# must request it explicitly. Requires a DirectML-enabled onnxruntime.dll.
 image = { version = "0.25.6", default-features = false, optional = true }
-oar-ocr = { version = "0.9.1", default-features = false, features = ["simd", "directml"], optional = true }
+oar-ocr = { version = "0.9.1", default-features = false, features = ["simd"], optional = true }
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"], optional = true }
 # HTTPS-only streaming downloader for pinned model artifacts. Kept separate
 # from model-cache so offline and package-managed deployments avoid HTTP/TLS.
@@ -94,6 +88,11 @@ vision = []
 model-cache = ["vision", "dep:dirs", "dep:fs2", "dep:sha2", "dep:windows-sys"]
 model-download = ["model-cache", "dep:ureq"]
 ocr-oar = ["model-cache", "dep:image", "dep:oar-ocr", "dep:ort"]
+# DirectML execution provider for the OCR path (Windows). Deliberately NOT part
+# of `ocr`: enabling it turns on ort's `directml` feature, which is not
+# target-gated upstream, so every ocr-oar consumer would otherwise compile it.
+# Opt in with `--features ocr,ocr-directml`.
+ocr-directml = ["ocr-oar", "oar-ocr/directml"]
 render-pdfium = ["vision", "dep:firecrawl-pdfium"]
 # Complete native OCR path. This remains opt-in so default library,
 # renderer-only, and browser consumers do not inherit inference or HTTP/TLS.
